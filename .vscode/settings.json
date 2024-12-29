@@ -1,0 +1,20 @@
+{
+    "files.associations": {
+        "video.h": "c",
+        "chaser.h": "c",
+        "capture.h": "c",
+        "stdio.h": "c",
+        "assert.h": "c",
+        "signal.h": "c",
+        "pulseaudio.h": "c",
+        "direction.h": "c",
+        "mainloop-api.h": "c",
+        "_kiss_fft_guts.h": "c",
+        "kiss_fft_log.h": "c",
+        "kiss_fft.h": "c",
+        "main.h": "c",
+        "blur.h": "c",
+        "draw.h": "c",
+        "tunnel.h": "c"
+    }
+}

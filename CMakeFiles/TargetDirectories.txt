@@ -1,0 +1,3 @@
+/home/streamer/Code/Milky_Linux_OSD/CMakeFiles/milky_osd.dir
+/home/streamer/Code/Milky_Linux_OSD/CMakeFiles/edit_cache.dir
+/home/streamer/Code/Milky_Linux_OSD/CMakeFiles/rebuild_cache.dir
