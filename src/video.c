@@ -135,13 +135,21 @@ void render(
                 // Seed the random number generator with the current time
                 srand((unsigned int)time(NULL));
 
-                // Generate a random float between 0.2 and 0.8
-                float rotationAngle = ((float)rand() / (float)RAND_MAX) * (0.8f - 0.2f) + 0.2f;
+                // Generate a random float between 0.2 and 0.5
+                float rotationAngle = ((float)rand() / (float)RAND_MAX) * (0.5f - 0.2f) + 0.2f;
 
+                if (rotationAngle > 0 && rotationAngle < 0.05) rotationAngle = 0.05f;
+                if (rotationAngle < 0 && rotationAngle > -0.05) rotationAngle = -0.05f;
+
+                float zoomFactor = ((float)rand() / (float)RAND_MAX) * (0.2f - 0.1f) + 0.1f;
+
+                if (zoomFactor > 0 && zoomFactor < 0.05) zoomFactor = 0.05f;
+                if (zoomFactor < 0 && zoomFactor > -0.05) zoomFactor = -0.05f;
 
                // check if it's time to regenerate the palette based on energy spikes and time elapsed
                 if ((milky_energyEnergySpikeDetected && currentTime - milky_energyLastChangeInitTime > 10 * 1000) || milky_energyLastChangeInitTime == 0) {
                     rotationAngle = -rotationAngle;
+                    zoomFactor = -zoomFactor;
                     // invert (make it minus, rotate in different direction)
                     milky_energyLastChangeInitTime = currentTime; // update the last initialization time
                 }
@@ -149,7 +157,7 @@ void render(
                
                // Rotate and scale effects with NEON-optimized copy
                rotate(timeFrame, milky_videoTempBuffer, frame, 0.02 * currentTime, rotationAngle, canvasWidthPx, canvasHeightPx);
-               scale(frame, milky_videoTempBuffer, 1.35f, canvasWidthPx, canvasHeightPx);
+               scale(frame, milky_videoTempBuffer, 1.15f, canvasWidthPx, canvasHeightPx);
      
                // Copy the final frame to the previous frame buffer
                #ifdef __ARM_NEON__

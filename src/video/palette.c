@@ -209,7 +209,7 @@ void generatePalette(void) {
     srand((unsigned int)time(NULL));
 
     // Randomly select a palette type from 0 to 6
-    int paletteType = rand() % 6;
+    int paletteType = rand() % 5;
 
     // Generate the palette based on the selected type
     switch (paletteType) {
@@ -277,7 +277,8 @@ void generatePalette(void) {
             }
             break;
 
-            case 3: // "christmas red/green" tunnel effect
+        /*
+        case 3: // "christmas red/green" tunnel effect
             #pragma omp parallel
             {
                 const float base_brightness = 0.8f; // Base brightness for green channel
@@ -341,8 +342,9 @@ void generatePalette(void) {
                 }
             }
         break;
+        */
 
-        case 4: // "default type 4"
+        case 3:
             {
                 // Precompute constants if possible
                 const int lower_bound = 0;
@@ -380,7 +382,7 @@ void generatePalette(void) {
             break;
 
         default:
-        case 5: // "custom type 5"
+        case 4:
             {
                 const float brightness_2 = 1.18f;
 

@@ -70,8 +70,8 @@ void process_audio_chunk(const uint8_t *waveform, size_t waveformLength, size_t 
 
 int main(int argc, char *argv[]) {
     omp_set_dynamic(0); // Disable dynamic thread adjustment
-    omp_set_num_threads(6); // Set to desired number of threads
-    omp_set_nested(6); // Disable nested parallelism to prevent thread oversubscription
+    omp_set_num_threads(8); // Set to desired number of threads
+    omp_set_nested(8); // Disable nested parallelism to prevent thread oversubscription
     
     //setup_signal_handlers();
 
