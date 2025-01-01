@@ -50,7 +50,7 @@ void render(
            ) {
                 // TODO: find out why the compiler corrupts the stack
                 
-                speed = 0.03323f; // NICE; great factor value found!
+                speed = 0.02f; // NICE; great factor value found!
 
                if (waveformLength == 0 || spectrumLength == 0) {
                    fprintf(stderr, "No waveform or spectrum data provided\n");

@@ -1,90 +1,28 @@
-#include "capture.h" 
+#include "capture.h"
 
-// current rendered frame (buffer allocated globally)
-uint8_t *frame = NULL;
+// double buffers
+FrameBuffer frameBuffers[BUFFER_COUNT];
+int currentWriteBuffer = 0;
+int currentRenderBuffer = 0;
 
-// GLFW window and OpenGL texture
-static GLFWwindow *window = NULL;
-static GLuint texture;
+// mutex and condition variable
+pthread_mutex_t bufferMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t bufferCond = PTHREAD_COND_INITIALIZER;
 
-#define WIDTH 1920
-#define HEIGHT 1080
-
-// SDL window
-//SDL_Window *window = NULL;          
-
-// SDL renderer
-//SDL_Renderer *renderer = NULL;     
+// rendering thread handle
+pthread_t renderThread;
 
 // global variable to store the reference time
 static struct timeval app_start_time;
 
-void initialize_timer() {
-    gettimeofday(&app_start_time, NULL);
-}
-
-float performance_now() {
-   struct timeval current_time;
-    gettimeofday(&current_time, NULL);
-
-    // Calculate elapsed time in microseconds
-    uint64_t elapsed_usec =
-        (current_time.tv_sec - app_start_time.tv_sec) * 1000000ULL +
-        (current_time.tv_usec - app_start_time.tv_usec);
-
-    // Convert elapsed time to milliseconds as double and return as float
-    return (float)(elapsed_usec / 1000.0);
-} 
-
-// for when the window is resized, we want to resize the viewport
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-}  
-
-GLuint VAO, VBO, EBO;
-
-void setup_vertex_data() {
-    float vertices[] = {
-        // Positions      // Texture Coords
-        -1.0f, -1.0f,     0.0f, 0.0f,
-         1.0f, -1.0f,     1.0f, 0.0f,
-         1.0f,  1.0f,     1.0f, 1.0f,
-        -1.0f,  1.0f,     0.0f, 1.0f
-    };
-
-    unsigned int indices[] = {
-        0, 1, 2,
-        2, 3, 0
-    };
-
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &EBO);
-
-    glBindVertexArray(VAO);
-
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
-}
-
+// static variables to track time and rendering
+static struct timespec lastRenderTime = {0, 0};
 
 const char* vertex_shader_src = 
     "#version 330 core\n"
-    "layout(location = 0) in vec2 aPos;\n"   // Input vertex position
-    "layout(location = 1) in vec2 aTexCoord;\n" // Input texture coordinates
-    "out vec2 TexCoord;\n"                 // Output texture coordinates
+    "layout(location = 0) in vec2 aPos;\n"      // input vertex position
+    "layout(location = 1) in vec2 aTexCoord;\n" // input texture coordinates
+    "out vec2 TexCoord;\n"                      // output texture coordinates
     "uniform float curvatureStrength;      // Strength of the curvature\n"
     "\n"
     "void main() {\n"
@@ -115,9 +53,8 @@ const char* fragment_shader_src =
 "uniform float time;              // Time for animation\n"
 "uniform float rotationSpeed;     // Speed of rotation\n"
 "uniform float blurStrength;      // Strength of radial blur\n"
-"uniform vec3 replacementColor;     // Most frequent color\n"
 "\n"
-// Radial blur helper function\n
+// radial blur helper function\n
 "vec4 radialBlur(sampler2D tex, vec2 uv, vec2 center, float blurStrength) {\n"
 "    vec4 result = vec4(0.0);\n"
 "    float totalWeight = 0.0;\n"
@@ -143,11 +80,6 @@ const char* fragment_shader_src =
 "    // Add radial blur\n"
 "    vec4 blurred = radialBlur(texture1, zoomUV, center, blurStrength);\n"
 "\n"
-"   // Replace black pixels with the most occurring color\n"
-"   /*if (blurred.rgb == vec3(0.0, 0.0, 0.0)) {\n"
-"        blurred.rgb = replacementColor;\n"
-"    }*/\n"
-"\n"
 "    // Center dim effect\n"
 "    vec2 offset = TexCoord - center;\n"
 "    float distance = length(offset);\n"
@@ -162,17 +94,33 @@ const char* fragment_shader_src =
 "\n"
 "    // Clamp the final color values to valid range\n"
 "    blurred.rgb = clamp(blurred.rgb, 0.0, 1.0);\n"
+
 "\n"
 "    // Output the final color\n"
 "    FragColor = blurred;\n"
 "}\n";
 
+void initialize_timer() {
+    gettimeofday(&app_start_time, NULL);
+}
 
-GLuint shader_program;
+float performance_now() {
+    struct timeval current_time;
+    gettimeofday(&current_time, NULL);
 
-void compile_and_link_shaders() {
+    // calculate elapsed time in microseconds
+    uint64_t elapsed_usec =
+        (current_time.tv_sec - app_start_time.tv_sec) * 1000000ULL +
+        (current_time.tv_usec - app_start_time.tv_usec);
+
+    // convert elapsed time to milliseconds as float and return
+    return (float)(elapsed_usec / 1000.0);
+}
+
+// shader compilation and linking function
+GLuint compile_and_link_shaders(const char* vertex_src, const char* fragment_src) {
     GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertex_shader, 1, &vertex_shader_src, NULL);
+    glShaderSource(vertex_shader, 1, &vertex_src, NULL);
     glCompileShader(vertex_shader);
 
     GLint success;
@@ -184,7 +132,7 @@ void compile_and_link_shaders() {
     }
 
     GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragment_shader, 1, &fragment_shader_src, NULL);
+    glShaderSource(fragment_shader, 1, &fragment_src, NULL);
     glCompileShader(fragment_shader);
 
     glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
@@ -194,7 +142,7 @@ void compile_and_link_shaders() {
         fprintf(stderr, "ERROR::FRAGMENT_SHADER_COMPILATION_FAILED\n%s\n", info_log);
     }
 
-    shader_program = glCreateProgram();
+    GLuint shader_program = glCreateProgram();
     glAttachShader(shader_program, vertex_shader);
     glAttachShader(shader_program, fragment_shader);
     glLinkProgram(shader_program);
@@ -208,497 +156,67 @@ void compile_and_link_shaders() {
 
     glDeleteShader(vertex_shader);
     glDeleteShader(fragment_shader);
+
+    return shader_program;
 }
 
-// creates a singleton window instance and initializes the GPU primitives (OpenGL)
-void initialize_glfw() {
-    if (!window) {
+// setup vertex data
+void setup_vertex_data(GLuint *VAO, GLuint *VBO, GLuint *EBO) {
+    float vertices[] = {
+        // positions      // texture coords
+        -1.0f, -1.0f,     0.0f, 0.0f,
+         1.0f, -1.0f,     1.0f, 0.0f,
+         1.0f,  1.0f,     1.0f, 1.0f,
+        -1.0f,  1.0f,     0.0f, 1.0f
+    };
 
-        initialize_timer();
+    unsigned int indices[] = {
+        0, 1, 2,
+        2, 3, 0
+    };
 
-        if (!glfwInit()) {
-            fprintf(stderr, "Failed to initialize GLFW.\n");
-            exit(EXIT_FAILURE);
-        }
+    glGenVertexArrays(1, VAO);
+    glGenBuffers(1, VBO);
+    glGenBuffers(1, EBO);
 
-        window = glfwCreateWindow(WIDTH, HEIGHT, "MilkyLinuxOSD", NULL, NULL);
-        if (!window) {
-            fprintf(stderr, "Failed to create GLFW window.\n");
-            glfwTerminate();
-            exit(EXIT_FAILURE);
-        }
+    glBindVertexArray(*VAO);
 
-        glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glBindBuffer(GL_ARRAY_BUFFER, *VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-        glfwMakeContextCurrent(window);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, *EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
-        if (glewInit() != GLEW_OK) {
-            fprintf(stderr, "Failed to initialize GLEW.\n");
-            exit(EXIT_FAILURE);
-        }
+    // position attribute
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
 
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // texture coord attribute
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
-        compile_and_link_shaders();
-        setup_vertex_data();
-    }
-
-    if (!frame) {
-        size_t frameSize = WIDTH * HEIGHT * 4; // RGBA format
-        frame = malloc(frameSize);
-        if (!frame) {
-            fprintf(stderr, "Failed to allocate framebuffer memory.\n");
-            glfwDestroyWindow(window);
-            glfwTerminate();
-            exit(EXIT_FAILURE);
-        }
-        memset(frame, 0, frameSize); // Initialize to black
-    }
-
+    glBindBuffer(GL_ARRAY_BUFFER, 0); 
+    glBindVertexArray(0); 
 }
 
-void cleanup_glfw() {
-    if (frame) {
-        free(frame);
-        frame = NULL;
-    }
-
-    if (texture) {
-        glDeleteTextures(1, &texture);
-        texture = 0;
-    }
-
-    if (window) {
-        glfwDestroyWindow(window);
-        window = NULL;
-        glfwTerminate();
-    }
-
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &EBO);
-    glDeleteProgram(shader_program);
-}
-
-ColorCount colorCounts[MAX_COLORS];
-int colorCountSize = 0;
-
-// Compare two colors
-int color_equals(Color c1, Color c2) {
-    return c1.r == c2.r && c1.g == c2.g && c1.b == c2.b;
-}
-
-// Add a color to the histogram
-void add_color(Color c) {
-    // Skip black
-    if (c.r == 0 && c.g == 0 && c.b == 0) {
-        return;
-    }
-
-    // Check if the color is already in the histogram
-    for (int i = 0; i < colorCountSize; i++) {
-        if (color_equals(colorCounts[i].color, c)) {
-            colorCounts[i].count++;
-            return;
-        }
-    }
-
-    // Add a new color if not already present
-    if (colorCountSize < MAX_COLORS) {
-        colorCounts[colorCountSize].color = c;
-        colorCounts[colorCountSize].count = 1;
-        colorCountSize++;
-    }
-}
-
-// Find the most frequent color
-Color find_most_frequent_color() {
-    Color mostFrequentColor = {0, 0, 0};
-    int maxCount = 0;
-
-    for (int i = 0; i < colorCountSize; i++) {
-        if (colorCounts[i].count > maxCount) {
-            maxCount = colorCounts[i].count;
-            mostFrequentColor = colorCounts[i].color;
-        }
-    }
-
-    return mostFrequentColor;
-}
-
-
-// Analyze the first pixel line of the framebuffer
-Color analyze_first_line(uint8_t *frame, int width) {
-    int numPixels = width > MAX_PIXELS ? MAX_PIXELS : width;
-
-    for (int i = 0; i < numPixels * 4; i += 4) { // Step by 4 for RGBA
-        Color c = {frame[i], frame[i + 1], frame[i + 2]}; // Extract RGB
-        add_color(c);
-    }
-
-    return find_most_frequent_color();
-}
-
-// renders the frame (buffer) onto the 2D texture (OpenGL) inside of the window
-static void render_frame(uint8_t *frame) {
-    float time = glfwGetTime(); // Get elapsed time
-    glUniform1f(glGetUniformLocation(shader_program, "time"), time);
-
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame);
-
-
-    
-
-    // Update the "curvatureStrength" uniform
-    float curvatureStrength = 0.05f; // Subtle curvature
-    glUniform1f(glGetUniformLocation(shader_program, "curvatureStrength"), curvatureStrength);
-
-
-    // Update the "grainAmount" uniform
-    float vignetteIntensity = 1.1f; // Example grain amount
-    glUniform1f(glGetUniformLocation(shader_program, "vignetteIntensity"), vignetteIntensity);
-
-    /*
-    Color mostFrequentColor = analyze_first_line(frame, 1000);
-    float r = mostFrequentColor.r / 255.0f;
-    float g = mostFrequentColor.g / 255.0f;
-    float b = mostFrequentColor.b / 255.0f;
-
-    GLint replacementColorLoc = glGetUniformLocation(shader_program, "replacementColor");
-    glUniform3f(replacementColorLoc, r, g, b);*/
-
-    // Update the "zoomFactor" uniform
-    float zoomFactor = 0.995f; // Slight zoom-out
-    glUniform1f(glGetUniformLocation(shader_program, "zoomFactor"), zoomFactor);
-
-    // Update the "grainAmount" uniform
-    float grainAmount = 0.03f; // Example grain amount
-    glUniform1f(glGetUniformLocation(shader_program, "grainAmount"), grainAmount);
-
-    // Update the "center" uniform (dynamic movement over time)
-    float centerX = 0.5f; /*+ 0.1f * sin(time * 0.5f); */// Moves left and right
-    float centerY = 0.5f; /*+ 0.1f * cos(time * 0.3f);*/ // Moves up and down
-    glUniform2f(glGetUniformLocation(shader_program, "center"), centerX, centerY);
-
-    // Update the "rotationSpeed" uniform
-    float rotationSpeed = 0.0f; // Example rotation speed (radians per second)
-    glUniform1f(glGetUniformLocation(shader_program, "rotationSpeed"), rotationSpeed);
-
-    // Update the "blurStrength" uniform
-    float blurStrength = 0.001f; // Subtle radial blur
-    glUniform1f(glGetUniformLocation(shader_program, "blurStrength"), blurStrength);
-
-
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(shader_program);
-
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glBindVertexArray(VAO);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-    glBindVertexArray(0);
-
-    if (!glfwWindowShouldClose(window)) {
-        glfwSwapBuffers(window);
-        glfwPollEvents();
-    } else {
-        glfwTerminate();
-        exit(EXIT_FAILURE);
-    }
-}
-
-
-// the struct is passed by reference (pointer into memory)
-int pulse_initialize(PulseAudio *pa) {
-
-    // allocate a new PulseAudio mainloop
-    pa->mainloop = pa_mainloop_new();
-
-    if (!pa->mainloop) {
-        fprintf(stderr, "pa_mainloop_new() failed!\n");
-        return 0;
-    }
-
-    // allocate a mainloop API
-    pa->mainloop_api = pa_mainloop_get_api(pa->mainloop);
-
-    if (pa_signal_init(pa->mainloop_api) != 0) {
-        fprintf(stderr, "pa_signal_init() failed\n");
-        return 0;
-    }
-
-    // allocate a signal for exiting (SIGNAL INTERRUPT, see POSIX standards)
-    pa->signal = pa_signal_new(SIGINT, exit_signal_callback, pa);
-    if (!pa->signal) {
-        fprintf(stderr, "pa_signal_new() failed\n");
-        return 0;
-    }
-
-    // we accept signals for a broken pipe (broken audio stream) and signal for ignore states
-    signal(SIGPIPE, SIG_IGN);
-
-    // allocate a new context for the mainloop api with name
-    pa->context = pa_context_new(pa->mainloop_api, "Milky PulseAudio Test");
-    if (!pa->context) {
-        fprintf(stderr, "pa_context_new() failed\n");
-        return 0;
-    }
-
-    // we try to connect to PulseAudio and let "our" mainloop run
-    if (pa_context_connect(pa->context, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) < 0) {
-        fprintf(stderr, "pa_context_connect() failed: %s\n", pa_strerror(pa_context_errno(pa->context)));
-        return 0;
-    }
-
-    // whenever a state in context changes, we want PulseAudio to call our state callback!
-    pa_context_set_state_callback(pa->context, context_state_callback, pa);
-
-    // create window and rendering surface
-    //initialize_sdl_resources(1440, 900);
-
-    return 1;
-} 
-
-void exit_signal_callback(pa_mainloop_api *m, pa_signal_event *e, int sig, void *userdata) {
-    PulseAudio *pa = (PulseAudio *)userdata;
-    printf("Exit signal (free resources here for the moment!)");
-    if (pa) pulse_quit(pa, 0);
-
-    //cleanup_sdl_resources();
-}
-
-void sink_info_callback(pa_context *c, const pa_sink_info *info, int eol, void *userdata) {
-    if (info) {
-        float volume = (float) pa_cvolume_avg(&(info->volume)) / (float)PA_VOLUME_NORM;
-        printf("percent volume = %.0f%%%s\n", volume * 100.0f, info->mute ? " (muted)" : "");
-    }   
-}
-
-void server_info_callback(pa_context *c, const pa_server_info *i, void *userdata) {
-    printf("default sink name = %s\n", i->default_sink_name); // let's see what we've got!
-    pa_context_get_sink_info_by_name(c, i->default_sink_name, sink_info_callback, userdata);
-} 
-
-void subscribe_callback(pa_context *c, pa_subscription_event_type_t type, uint32_t idx, void *userdata) {
-    unsigned facility = type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK;
-
-    pa_operation *op = NULL;
-
-    switch (facility) {
-        case PA_SUBSCRIPTION_EVENT_SINK:
-            op = pa_context_get_sink_info_by_index(c, idx, sink_info_callback, userdata);
-            break;
-
-        default:
-            assert(0); // Unexpected event
-            break;
-    }
-
-    if (op)
-        pa_operation_unref(op);
-}
-
-// Static variables to track time and rendering
-static struct timespec lastRenderTime = {0, 0};
-
-// reads the system audio stream data
-void stream_read_callback(pa_stream *s, size_t length, void *userdata) {
-    const void *data;
-
-/*
-        printf("stop = %d\n", milky_sig_stop);
-        printf("Address of milky_sig_stop: %p\n", (void*)&milky_sig_stop);
-
-    if (milky_sig_stop) {
-        printf("stop = %d\n", milky_sig_stop);
-        printf("\nCtrl+C detected. Skipping...\n");  
-        return;  
-    }  
-
-
-
-    if (!milky_sig_stop) {
-    */
-        
-    if (pa_stream_peek(s, &data, &length) < 0) {
-        fprintf(stderr, "pa_stream_peek() failed: %s\n", pa_strerror(pa_context_errno(pa_stream_get_context(s))));
-    }
-
-    initialize_glfw();
-
-
-    if (data) {
-        const uint8_t *waveform = (const uint8_t *)data;
-
-        // the previous visualization fits perfect for the old monitor, but it's not that cool
-        // for the on-screen display (music visualization - as it is distorted)
-        // the reason probably is that we're receiving "wrong" data from PulseAudio
-        // need to analyze PulseAudio data now. Let me see if I can render the 
-        // visualization on top once it appears.
-
-        // PulseAudio delivers 4-byte metadata chunks that we'd need to ignore
-        if (length >= 1024) {
-
-            struct timespec currentRenderTime;
-            clock_gettime(CLOCK_MONOTONIC, &currentRenderTime);
-
-            // If lastRenderTime is not set, initialize it
-            if (lastRenderTime.tv_sec == 0 && lastRenderTime.tv_nsec == 0) {
-                lastRenderTime = currentRenderTime;
-            }
-
-            // Calculate elapsed time in nanoseconds
-            long elapsedNs = (currentRenderTime.tv_sec - lastRenderTime.tv_sec) * 1000000000L +
-                            (currentRenderTime.tv_nsec - lastRenderTime.tv_nsec);
-
-            // Define the render interval (33ms = 33,000,000 nanoseconds)
-            const long renderIntervalNs = 24000000L;
-
-            // Check if enough time has passed since the last render
-            if (elapsedNs >= renderIntervalNs) {
-                // Update the last render time
-                lastRenderTime = currentRenderTime;
-
-                // here we need to call an FFT algorithm (or implement one)
-                // so that we can get the frequency spectrum for the waveform
-                // this is necessary to calculate the spectral flux    
-                //printf("Received waveform data of size: %zu\n", length);
-
-                uint8_t spectrum[length / 2];
-
-                // specifically initialize memory with zeros
-                memset(spectrum, 0, sizeof(spectrum));
-
-                // calculate the spectrum
-                calculate_spectrum(waveform, length, spectrum);
-
-                size_t spectrumLength = sizeof(spectrum);
-
-                // We're good here.
-                //printf("Received FFT spectrum data of size: %zu\n", spectrumLength);
-
-                // cool! now we only need to call the VIDEO function
-                // and render the framebuffer onto a surface that can handle
-                // framebuffer data -- you'll then see the current playback sound
-                // being beautifully visualized!
-                // We'll use SDL to render the framebuffer on a new window that we're 
-                // going to create.
-
-                // simple demo: width * height * count of values we have to reserve 
-                // memory for because a framebuffer wants Red, Green, Blue, Alpha 
-                // cannel values per pixel.
-
-                size_t frameSize = WIDTH * HEIGHT * 4; // RGBA
-
-                // if frame buffer isn't allocated yet, do it once during initialization
-                if (frame == NULL) {
-                    // allocate memory once
-                    frame = (uint8_t *)malloc(frameSize); 
-                    if (!frame) {
-                        fprintf(stderr, "Failed to allocate memory for the frame buffer.\n");
-                    }
-                }
-
-                memset(frame, 0, frameSize);
-
-                float *presetsBuffer = NULL; 
-                float speed = 0.1899f;
-                size_t sampleRate = 44100;
-                size_t bitDepth = 32;
-                size_t currentTime = performance_now();
-                
-                // rendering the audio 
-                render(
-                    frame,
-                    WIDTH,
-                    HEIGHT,
-                    waveform,
-                    spectrum,
-                    length,
-                    spectrumLength,
-                    bitDepth,
-                    presetsBuffer,
-                    0.0123f,
-                    currentTime,
-                    sampleRate
-                );
-
-
-                // Render the frame
-                render_frame(frame);
-            }
-            
-
-        }
-    }
-    pa_stream_drop(s); // free 
-    
-    //}   
+// for when the window is resized, we want to resize the viewport
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    glViewport(0, 0, width, height);
 }  
 
-// handles PulseAudio context state changes
-void context_state_callback(pa_context *c, void *userdata) {
+int pulse_run(PulseAudio *pa) {
+    int ret = 1;
+    if (pa_mainloop_run(pa->mainloop, &ret) < 0) {
+        fprintf(stderr, "pa_mainloop_run() failed.\n");
+        return ret;
+    }
+    return ret;
+} 
 
-    assert(c && userdata);
-
-    PulseAudio *pa = (PulseAudio *)userdata;
-
-    // depending on the state change, we need to handle in different ways...
-    switch (pa_context_get_state(c)) {
-
-        case PA_CONTEXT_CONNECTING:
-        case PA_CONTEXT_AUTHORIZING:
-        case PA_CONTEXT_SETTING_NAME:
-            break;
-
-        case PA_CONTEXT_READY:
-            fprintf(stderr, "PulseAudio connection established.\n");
-            pa_context_get_server_info(c, server_info_callback, userdata);
-
-            // Subscribe to sink events for volume change notifications
-            pa_context_set_subscribe_callback(c, subscribe_callback, userdata);
-            pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK, NULL, NULL);
-
-            // Let's try to record system audio (the audio you're hearing right now!)
-            pa_sample_spec ss = {
-                .format = PA_SAMPLE_U8, // 16-bit little-endian
-                .rate = 44100,             // 44.1kHz sample rate
-                .channels = 2              // Stereo
-            };
-
-            pa->stream = pa_stream_new(c, "Audio Capture", &ss, NULL);
-
-            if (!pa->stream) {
-                fprintf(stderr, "pa_stream_new() failed (capturing system audio).\n");
-                pulse_quit(pa, 1);
-                return;
-            }
-
-            pa_stream_set_read_callback(pa->stream, stream_read_callback, pa);
-
-            if (pa_stream_connect_record(pa->stream, NULL, NULL, PA_STREAM_ADJUST_LATENCY) < 0) {
-                fprintf(stderr, "pa_stream_connect_record() failed: %s\n", pa_strerror(pa_context_errno(c)));
-                pulse_quit(pa, 1);
-                return;
-            }
-            break;
-
-        case PA_CONTEXT_TERMINATED:
-            printf("Well, we've got kicked out...\n");
-             pulse_quit(pa, 0);
-            break;
-
-        case PA_CONTEXT_FAILED:
-            printf("Well, shit got us good.. nothing works!\n");
-             pulse_quit(pa, 1);
-            break;
-    }  
-}  
+void pulse_quit(PulseAudio *pa, int ret) {
+    printf(stdout, "Signaling PulseAudio to quit.\n");
+    pa->mainloop_api->quit(pa->mainloop_api, ret);
+}
 
 void pulse_destroy(PulseAudio *pa) {
     if (pa->context) {
@@ -719,141 +237,489 @@ void pulse_destroy(PulseAudio *pa) {
     }
 } 
 
-int pulse_run(PulseAudio *pa) {
 
-    int ret = 1;
-
-    // TODO: might either implement this iteratively 
-
-    /**
-     * while (!stop_requested) {
-        if (pa_mainloop_iterate(pa->mainloop, 1, &ret) < 0) {
-            fprintf(stderr, "pa_mainloop_iterate() failed\n");
-            return ret;
-        }
-    }
-     */
-
-    // TODO: or use pthread to handle SIGINT on the main thread and pulseaudio on a second one
-
-    if (pa_mainloop_run(pa->mainloop, &ret) < 0) {
-        fprintf(stderr, "pa_mainloop_run() failed.\n");
-        return ret;
-    }
-    return ret;
-} 
-
-void pulse_quit(PulseAudio *pa, int ret) {
-    pa->mainloop_api->quit(pa->mainloop_api, ret);
+void exit_signal_callback(pa_mainloop_api *m, pa_signal_event *e, int sig, void *userdata) {
+    PulseAudio *pa = (PulseAudio *)userdata;
+    printf("Exit signal (free resources here for the moment!)");
+    if (pa) pulse_quit(pa, 0);
 }
 
-int run() {
+static void window_close_callback(GLFWwindow* window) {
+     exit(EXIT_SUCCESS);
+}
 
-    printf("Testing PulseAudio lib integration...");
+void* render_thread_func(void *arg) {
 
-    PulseAudio pa = {0};
+    omp_set_dynamic(0);
+    omp_set_num_threads(12); 
+    omp_set_nested(12);
 
-    if (!pulse_initialize(&pa)){
-        printf("Nah, lets go sleep now.. this is tiring!!");
+    PulseAudio *pa = (PulseAudio *)arg; // receive PulseAudio pointer
+
+    // initialize GLFW and OpenGL in this thread
+    if (!glfwInit()) {
+        fprintf(stderr, "Failed to initialize GLFW in render thread.\n");
+        pthread_exit(NULL);
+    }
+
+    GLFWwindow *renderWindow = glfwCreateWindow(WIDTH, HEIGHT, "MilkyLinuxOSD", NULL, NULL);
+    if (!renderWindow) {
+        fprintf(stderr, "Failed to create GLFW window in render thread.\n");
+        glfwTerminate();
+        pthread_exit(NULL);
+    }
+
+    glfwSetFramebufferSizeCallback(renderWindow, framebuffer_size_callback);
+    glfwMakeContextCurrent(renderWindow);
+    glfwSetWindowCloseCallback(renderWindow, window_close_callback);
+
+    if (glewInit() != GLEW_OK) {
+        fprintf(stderr, "Failed to initialize GLEW in render thread.\n");
+        glfwDestroyWindow(renderWindow);
+        glfwTerminate();
+        pthread_exit(NULL);
+    }
+
+    // local OpenGL resources
+    GLuint localShaderProgram = compile_and_link_shaders(vertex_shader_src, fragment_shader_src);
+    GLuint localVAO, localVBO, localEBO;
+    setup_vertex_data(&localVAO, &localVBO, &localEBO);
+
+    // generate and bind local texture
+    GLuint renderTexture;
+    glGenTextures(1, &renderTexture);
+    glBindTexture(GL_TEXTURE_2D, renderTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glUseProgram(localShaderProgram);
+
+    // set 'texture1' uniform to texture unit 0
+    GLint texture1Loc = glGetUniformLocation(localShaderProgram, "texture1");
+    if (texture1Loc != -1) {
+        glUniform1i(texture1Loc, 0); // texture unit 0
+    } else {
+        fprintf(stderr, "Warning: 'texture1' uniform not found in shader program.\n");
+    }
+
+    // activate texture unit 0 and bind the texture
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderTexture);
+
+    // retrieve other uniform locations from the local shader program
+    GLint localTimeLoc = glGetUniformLocation(localShaderProgram, "time");
+    GLint localCurvatureStrengthLoc = glGetUniformLocation(localShaderProgram, "curvatureStrength");
+    GLint localVignetteIntensityLoc = glGetUniformLocation(localShaderProgram, "vignetteIntensity");
+    GLint localZoomFactorLoc = glGetUniformLocation(localShaderProgram, "zoomFactor");
+    GLint localCenterLoc = glGetUniformLocation(localShaderProgram, "center");
+    GLint localRotationSpeedLoc = glGetUniformLocation(localShaderProgram, "rotationSpeed");
+    GLint localBlurStrengthLoc = glGetUniformLocation(localShaderProgram, "blurStrength");
+   
+    if (localTimeLoc == -1 || localCurvatureStrengthLoc == -1 || localVignetteIntensityLoc == -1 ||
+        localZoomFactorLoc == -1 || localCenterLoc == -1 || localRotationSpeedLoc == -1 || localBlurStrengthLoc == -1) {
+        fprintf(stderr, "Warning: One or more uniform locations not found in the shader program.\n");
+    }
+
+    // main rendering loop
+    while (!glfwWindowShouldClose(renderWindow)) {
+        pthread_mutex_lock(&bufferMutex);
+
+        // wait until the render buffer is ready or termination is signaled
+        while (frameBuffers[currentRenderBuffer].ready == 0) {
+            pthread_cond_wait(&bufferCond, &bufferMutex);
+        }
+
+        // get the data to render
+        uint8_t *renderFrame = frameBuffers[currentRenderBuffer].data;
+
+        // mark the buffer as not ready
+        frameBuffers[currentRenderBuffer].ready = 0;
+
+        pthread_mutex_unlock(&bufferMutex);
+
+        // update uniforms
+        float currentTime = glfwGetTime();
+        if (localTimeLoc != -1) glUniform1f(localTimeLoc, currentTime);
+        if (localCurvatureStrengthLoc != -1) glUniform1f(localCurvatureStrengthLoc, 0.05f);
+        if (localVignetteIntensityLoc != -1) glUniform1f(localVignetteIntensityLoc, 1.1f);
+        if (localZoomFactorLoc != -1) glUniform1f(localZoomFactorLoc, 0.995f);
+        if (localCenterLoc != -1) glUniform2f(localCenterLoc, 0.5f, 0.5f);
+        if (localRotationSpeedLoc != -1) glUniform1f(localRotationSpeedLoc, 0.0f);
+        if (localBlurStrengthLoc != -1) glUniform1f(localBlurStrengthLoc, 0.001f);
+
+        // upload texture data
+        glBindTexture(GL_TEXTURE_2D, renderTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, WIDTH, HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, renderFrame);
+
+        // clear the screen
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // render the quad
+        glBindVertexArray(localVAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+        
+        glfwSwapBuffers(renderWindow);
+        glfwPollEvents();
+    }
+
+    // after exiting the loop, signal PulseAudio to quit
+    if (pa && pa->mainloop_api) {
+        pulse_quit(pa, 0);
+    }
+
+    // cleanup OpenGL resources
+    glDeleteTextures(1, &renderTexture);
+    glDeleteVertexArrays(1, &localVAO);
+    glDeleteBuffers(1, &localVBO);
+    glDeleteBuffers(1, &localEBO);
+    glDeleteProgram(localShaderProgram);
+
+    glfwDestroyWindow(renderWindow);
+    glfwTerminate();
+
+    pthread_exit(NULL);
+}
+
+void* pulse_thread_func(void *arg) {
+
+    omp_set_dynamic(0);
+    omp_set_num_threads(6); 
+    omp_set_nested(6);
+
+    PulseAudio *pa = (PulseAudio *)arg;
+    int ret = pulse_run(pa);
+    return (void *)(intptr_t)ret;
+}
+
+int pulse_initialize(PulseAudio *pa) {
+    // create a new PulseAudio mainloop
+    pa->mainloop = pa_mainloop_new();
+
+    if (!pa->mainloop) {
+        fprintf(stderr, "pa_mainloop_new() failed!\n");
         return 0;
     }
 
-    int ret = pulse_run(&pa);
+    // allocate a mainloop API
+    pa->mainloop_api = pa_mainloop_get_api(pa->mainloop);
 
-    pulse_destroy(&pa);
+    if (pa_signal_init(pa->mainloop_api) != 0) {
+        fprintf(stderr, "pa_signal_init() failed\n");
+        return 0;
+    }
 
-    return ret;
-}  
+    // allocate a signal for exiting (SIGINT)
+    pa->signal = pa_signal_new(SIGINT, exit_signal_callback, pa);
+    if (!pa->signal) {
+        fprintf(stderr, "pa_signal_new() failed\n");
+        return 0;
+    }
+
+    // ignore SIGPIPE
+    signal(SIGPIPE, SIG_IGN);
+
+    // allocate a new context for the mainloop API with name
+    pa->context = pa_context_new(pa->mainloop_api, "Milky_PulseAudio_Listener");
+    if (!pa->context) {
+        fprintf(stderr, "pa_context_new() failed\n");
+        return 0;
+    }
+
+    // connect to PulseAudio
+    if (pa_context_connect(pa->context, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) < 0) {
+        fprintf(stderr, "pa_context_connect() failed: %s\n", pa_strerror(pa_context_errno(pa->context)));
+        return 0;
+    }
+    pa_context_set_state_callback(pa->context, context_state_callback, pa);
+
+    return 1;
+}
+
+// handles PulseAudio context state changes
+void context_state_callback(pa_context *c, void *userdata) {
+    assert(c && userdata);
+
+    PulseAudio *pa = (PulseAudio *)userdata;
+
+    switch (pa_context_get_state(c)) {
+        case PA_CONTEXT_CONNECTING:
+        case PA_CONTEXT_AUTHORIZING:
+        case PA_CONTEXT_SETTING_NAME:
+            break;
+
+        case PA_CONTEXT_READY:
+            fprintf(stderr, "PulseAudio connection established.\n");
+            pa_context_get_server_info(c, server_info_callback, userdata);
+
+            // subscribe to sink events for volume change notifications
+            pa_context_set_subscribe_callback(c, subscribe_callback, userdata);
+            pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK, NULL, NULL);
+
+            // try to record system audio
+            pa_sample_spec ss = {
+                .format = PA_SAMPLE_U8, // 8-bit unsigned
+                .rate = 44100,          // 44.1kHz sample rate
+                .channels = 2           // Stereo
+            };
+
+            pa->stream = pa_stream_new(c, "Audio Capture", &ss, NULL);
+
+            if (!pa->stream) {
+                fprintf(stderr, "pa_stream_new() failed (capturing system audio).\n");
+                pulse_quit(pa, 1);
+                return;
+            }
+
+            pa_stream_set_read_callback(pa->stream, stream_read_callback, pa);
+
+            if (pa_stream_connect_record(pa->stream, NULL, NULL, PA_STREAM_ADJUST_LATENCY) < 0) {
+                fprintf(stderr, "pa_stream_connect_record() failed: %s\n", pa_strerror(pa_context_errno(c)));
+                pulse_quit(pa, 1);
+                return;
+            }
+            break;
+
+        case PA_CONTEXT_TERMINATED:
+            printf("PulseAudio context terminated.\n");
+            pulse_quit(pa, 0);
+            break;
+
+        case PA_CONTEXT_FAILED:
+            printf("PulseAudio context failed.\n");
+            pulse_quit(pa, 1);
+            break;
+    }
+}
+
+void sink_info_callback(pa_context *c, const pa_sink_info *info, int eol, void *userdata) {
+    if (info) {
+        float volume = (float) pa_cvolume_avg(&(info->volume)) / (float)PA_VOLUME_NORM;
+        printf("Percent volume = %.0f%%%s\n", volume * 100.0f, info->mute ? " (muted)" : "");
+    }
+}
+
+void server_info_callback(pa_context *c, const pa_server_info *i, void *userdata) {
+    printf("Default sink name = %s\n", i->default_sink_name);
+    pa_context_get_sink_info_by_name(c, i->default_sink_name, sink_info_callback, userdata);
+}
+
+void subscribe_callback(pa_context *c, pa_subscription_event_type_t type, uint32_t idx, void *userdata) {
+    unsigned facility = type & PA_SUBSCRIPTION_EVENT_FACILITY_MASK;
+
+    pa_operation *op = NULL;
+
+    switch (facility) {
+        case PA_SUBSCRIPTION_EVENT_SINK:
+            op = pa_context_get_sink_info_by_index(c, idx, sink_info_callback, userdata);
+            break;
+
+        default:
+            assert(0); // unexpected event
+            break;
+    }
+
+    if (op)
+        pa_operation_unref(op);
+}
 
 
+// reads the system audio stream data (from PulseAudio)
+void stream_read_callback(pa_stream *s, size_t length, void *userdata) {
+    const void *data;
+
+    if (pa_stream_peek(s, &data, &length) < 0) {
+        fprintf(stderr, "pa_stream_peek() failed: %s\n", pa_strerror(pa_context_errno(pa_stream_get_context(s))));
+        return;
+    }
+
+    if (data) {
+        const uint8_t *waveform = (const uint8_t *)data;
+
+        if (length >= 1024) {
+
+            struct timespec currentRenderTime;
+            clock_gettime(CLOCK_MONOTONIC, &currentRenderTime);
+
+            // if lastRenderTime is not set, initialize it
+            if (lastRenderTime.tv_sec == 0 && lastRenderTime.tv_nsec == 0) {
+                lastRenderTime = currentRenderTime;
+            }
+
+            // calculate elapsed time in nanoseconds
+            long elapsedNs = (currentRenderTime.tv_sec - lastRenderTime.tv_sec) * 1000000000L +
+                            (currentRenderTime.tv_nsec - lastRenderTime.tv_nsec);
+
+            // render interval (16ms = 16,000,000 nanoseconds) -> 60 FPS
+            // made it a lil slower
+            const long renderIntervalNs = 24000000L;
+
+            // check if enough time has passed since the last render
+            //if (elapsedNs >= renderIntervalNs) {
+                // update the last render time to limit
+                lastRenderTime = currentRenderTime;
+
+                uint8_t spectrum[length / 2];
+                memset(spectrum, 0, sizeof(spectrum));
+
+                // calculate the spectrum
+                calculate_spectrum(waveform, length, spectrum);
+
+                size_t spectrumLength = sizeof(spectrum);
+
+                float *presetsBuffer = NULL;  
+                size_t sampleRate = 44100;
+                size_t bitDepth = 32;
+                size_t currentTime = performance_now();
+
+                // render the audio visualization onto the current write buffer
+                render(
+                    // write to the current write buffer
+                    frameBuffers[currentWriteBuffer].data, 
+                    WIDTH,
+                    HEIGHT,
+                    waveform,
+                    spectrum,
+                    length,
+                    spectrumLength,
+                    bitDepth,
+                    presetsBuffer,
+                    0.0123f,
+                    currentTime,
+                    sampleRate
+                );
+
+                // double buffering: mark the buffer as ready and signal the rendering thread
+                pthread_mutex_lock(&bufferMutex);
+
+                frameBuffers[currentWriteBuffer].ready = 1;
+
+                pthread_cond_signal(&bufferCond);
+
+                // switch to the next write buffer
+                currentWriteBuffer = (currentWriteBuffer + 1) % BUFFER_COUNT;
+
+                pthread_mutex_unlock(&bufferMutex);
+            //}  
+        }
+    }
+
+    pa_stream_drop(s); // free the buffer
+}
+
+
+// calculate the spectrum using KISS FFT
 void calculate_spectrum(const uint8_t *waveform, size_t sample_count, uint8_t *spectrum) {
-    // Step 1: Allocate memory for KISS FFT input and output
+    // allocate memory for KISS FFT input and output
     kiss_fft_cpx in[sample_count];
     kiss_fft_cpx out[sample_count];
     kiss_fft_cfg cfg;
 
-    // Step 2: Normalize waveform into input for FFT (convert uint8_t [0-255] to float [-1.0, 1.0])
+    // normalize waveform into input for FFT (convert uint8_t [0-255] to float [-1.0, 1.0])
     for (size_t i = 0; i < sample_count; i++) {
-
-        // Center around 0
+        // center around 0
         in[i].r = ((float)(waveform[i]) - 128.0f) / 128.0f; 
-
-        // Imaginary part is zero for real input
-        in[i].i = 0.0f; 
+        in[i].i = 0.0f; // imaginary part is zero for real input
     }
 
-    // Step 3: Allocate FFT configuration
+    // Allocate FFT configuration
     cfg = kiss_fft_alloc(sample_count, 0, NULL, NULL);
     if (!cfg) {
         fprintf(stderr, "Failed to allocate KISS FFT configuration.\n");
         return;
     }
 
-    // Step 4: Perform the FFT
+    // perform the FFT
     kiss_fft(cfg, in, out);
 
-    // Step 5: Compute the magnitude of each frequency bin and normalize to [0, 255]
-    for (size_t i = 0; i < sample_count / 2; i++) { // Only first half is meaningful for real FFT
-
-        // Compute magnitude
+    // compute the magnitude of each frequency bin and normalize to [0, 255]
+    // only first half is meaningful for real FFT
+    for (size_t i = 0; i < sample_count / 2; i++) { 
+        // compute magnitude
         float magnitude = sqrtf(out[i].r * out[i].r + out[i].i * out[i].i); 
-
-        // Normalization
+        // normalize
         spectrum[i] = (uint8_t)(255.0f * magnitude / (float)sample_count); 
     }
-
-    // Step 6: Free the FFT configuration
+    // free the FFT configuration
     free(cfg);
 }
 
-// TODO: need to refactor this. Rendering does NOT belong here (in audio capture code ;)
-// need to pass a function pointer and do all that in a callback function
-// defined in main.c (which does not exist yet ;)
-/*
-int initialize_sdl_resources(size_t canvasWidthPx, size_t canvasHeightPx) {
-    if (!window && !renderer) {
-
-        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-            fprintf(stderr, "Failed to initialize SDL: %s\n", SDL_GetError());
-            return -1;
-        }
-
-        window = SDL_CreateWindow("Visualizer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                  canvasWidthPx, canvasHeightPx, SDL_WINDOW_SHOWN);
-        if (!window) {
-            fprintf(stderr, "Failed to create SDL window: %s\n", SDL_GetError());
-            return -1;
-        }
-
-        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-        if (!renderer) {
-            fprintf(stderr, "Failed to create SDL renderer: %s\n", SDL_GetError());
-            return -1;
-        }
-
-        size_t frameSize = canvasWidthPx * canvasHeightPx * 4; // RGBA
-        frame = (uint8_t *)malloc(frameSize);
-        if (!frame) {
-            fprintf(stderr, "Failed to allocate memory for the frame buffer.\n");
-            return -1;
-        }
-    }
-    return 0;
+void initialize_glfw() {
+    initialize_timer();
 }
 
-// we don't want to leak memory, so we've gotta free() the resources
-void cleanup_sdl_resources() {
-    if (frame) {
-        free(frame);
-        frame = NULL;
+void cleanup_glfw() {
+    // cleanup both frame buffers
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        if (frameBuffers[i].data) {
+            free(frameBuffers[i].data);
+            frameBuffers[i].data = NULL;
+        }
     }
-    if (renderer) {
-        SDL_DestroyRenderer(renderer);
-        renderer = NULL;
+}
+
+// initialize frame buffers (called from main thread)
+void initialize_frame_buffers() {
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        frameBuffers[i].data = (uint8_t *)malloc(WIDTH * HEIGHT * 4);
+        if (!frameBuffers[i].data) {
+            fprintf(stderr, "Failed to allocate memory for frame buffer %d.\n", i);
+            cleanup_glfw();
+            exit(EXIT_FAILURE);
+        }
+        memset(frameBuffers[i].data, 0, WIDTH * HEIGHT * 4); // initialize to black
+        frameBuffers[i].ready = 0;
     }
-    if (window) {
-        SDL_DestroyWindow(window);
-        window = NULL;
+}
+
+// run function manages thread creation and termination
+int run() {
+    printf("Testing PulseAudio lib integration...\n");
+
+    PulseAudio pa = {0};
+
+    if (!pulse_initialize(&pa)){
+        printf("Failed to initialize PulseAudio.\n");
+        return 0;
     }
-    SDL_Quit();
-}*/
+
+    // initialize frame buffers
+    initialize_frame_buffers();
+
+    // Cceate the rendering thread
+    if (pthread_create(&renderThread, NULL, render_thread_func, (void *)&pa) != 0) {
+        fprintf(stderr, "Failed to create rendering thread.\n");
+        pulse_destroy(&pa);
+        cleanup_glfw();
+        exit(EXIT_FAILURE);
+    }
+
+    // create a separate thread for PulseAudio mainloop
+    pthread_t pulseThread;
+    if (pthread_create(&pulseThread, NULL, pulse_thread_func, &pa) != 0) {
+        fprintf(stderr, "Failed to create PulseAudio thread.\n");
+        pthread_cond_signal(&bufferCond);
+        pthread_join(renderThread, NULL);
+        pulse_destroy(&pa);
+        cleanup_glfw();
+        exit(EXIT_FAILURE);
+    }
+
+    // Wwit for PulseAudio thread to finish
+    void *pulseRet;
+    pthread_join(pulseThread, &pulseRet);
+
+    // wake up the rendering thread if waiting
+    pthread_cond_signal(&bufferCond); 
+    pthread_join(renderThread, NULL);
+
+    // cleanup PulseAudio resources
+    pulse_destroy(&pa);
+
+    // cleanup frame buffers
+    cleanup_glfw();
+
+    return (int)(intptr_t)pulseRet;
+}

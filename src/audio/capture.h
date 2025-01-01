@@ -1,29 +1,34 @@
 #ifndef CAPTURE_H
 #define CAPTURE_H
 
+#include <pthread.h>
 #include <stdio.h>
 #include <assert.h>
 #include <signal.h>
 #include <time.h>
-#include <unistd.h> // nanosleep() for ctrl+c to work (POSIX signals don't come through otherwise)
 
-// include the PulseAudio library 
+// Include the PulseAudio library 
 #include <pulse/pulseaudio.h>
 
-// for rendering using GLFW
+// For rendering using GLFW
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
-// include KISS FFT
+// Include KISS FFT
 #include "./kiss_fft/kiss_fft.h"
 
-typedef struct {
-    uint8_t r; // Red channel
-    uint8_t g; // Green channel
-    uint8_t b; // Blue channel
-} Color;
+// Constants
+#define BUFFER_COUNT 2
+#define WIDTH 1920
+#define HEIGHT 1080
 
-// callback (set from main.c)
+// Structures
+typedef struct {
+    uint8_t *data;
+    int ready; // 0: not ready, 1: ready
+} FrameBuffer;
+
+// Callback (set from main.c)
 typedef void (*process_audio_chunk_callback_t)(
     const uint8_t *waveform,
     size_t sampleLength,
@@ -31,9 +36,7 @@ typedef void (*process_audio_chunk_callback_t)(
     const uint8_t *spectrum
 );
 
-// we need to typedef a struct because we want to get hold of some references
-// (aka. pointers into memory...) -- but we don't want to get lost in a million
-// variables..
+// PulseAudio struct
 typedef struct {
     pa_mainloop *mainloop;
     pa_mainloop_api *mainloop_api;
@@ -42,6 +45,7 @@ typedef struct {
     pa_stream *stream; 
 } PulseAudio;
 
+// Function Declarations
 void exit_signal_callback(pa_mainloop_api *m, pa_signal_event *e, int sig, void *userdata);
 void context_state_callback(pa_context *c, void *userdata);
 void server_info_callback(pa_context *c, const pa_server_info *i, void *userdata);
@@ -57,34 +61,23 @@ void pulse_quit(PulseAudio *pa, int ret);
 int run();
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+static void window_close_callback(GLFWwindow* window);
 
 // FFT related
 void calculate_spectrum(const uint8_t *waveform, size_t sample_count, uint8_t *spectrum);
 
-typedef struct {
-    Color color;
-    int count;
-} ColorCount;
-
-
-#define MAX_COLORS 256 // Adjust based on expected unique colors
-#define MAX_PIXELS 1000 // Max number of pixels to analyze in the first row
-
-
-void initialize_glfw();
-void cleanup_glfw();
-static void render_frame(uint8_t *frame);
-
-int color_equals(Color c1, Color c2);
-void add_color(Color c);
-Color find_most_frequent_color();
-Color analyze_first_line(uint8_t *frame, int width);
-
+// Timer functions
 void initialize_timer();
 float performance_now();
 
-// Rendering relates
-//int initialize_sdl_resources(size_t canvasWidthPx, size_t canvasHeightPx);
-//void cleanup_sdl_resources();
+// OpenGL and Rendering
+void initialize_glfw();
+void cleanup_glfw();
+
+// Rendering thread function
+void* render_thread_func(void *arg);
+
+// PulseAudio thread function
+void* pulse_thread_func(void *arg);
 
 #endif // CAPTURE_H
