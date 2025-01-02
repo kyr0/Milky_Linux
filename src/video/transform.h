@@ -9,9 +9,18 @@
 #include <string.h>
 #include <omp.h>
 
+#include "../audio/energy.h"
+
 #ifdef __ARM_NEON__
 #include <arm_neon.h>
 #endif
+
+// Define maximum and minimum rotation in degrees
+#define MAX_ROTATION_DEGREES 15.0f
+#define MIN_ROTATION_DEGREES 2.0f
+
+// Convert degrees to radians
+#define DEG_TO_RAD(degrees) ((degrees) * (M_PI / 180.0f))
 
 void rotate(float timeFrame, uint8_t *tempBuffer, uint8_t *screen, float speed, float angle, size_t width, size_t height);
 

@@ -10,7 +10,7 @@ static RGB targetPalette[MILKY_PALETTE_SIZE];
 static RGB oldPalette[MILKY_PALETTE_SIZE];
 static int isTransitioning = 0;
 static int transitionStep = 0;
-static int totalTransitionSteps = 450; // Default transition steps
+static int totalTransitionSteps = 650; // Default transition steps
 
 // Helper function for HSL to RGB conversion
 float hue2rgb(float p, float q, float t) {
@@ -504,7 +504,7 @@ void applyPaletteToCanvas(size_t currentTime, uint8_t *canvas, size_t width, siz
     size_t frameSize = width * height;
 
     // Check if it's time to regenerate the palette based on energy spikes and time elapsed
-    if ((milky_energyEnergySpikeDetected && currentTime - milky_paletteLastPaletteInitTime > 20000) || milky_paletteLastPaletteInitTime == 0) {
+    if ((milky_energyEnergySpikeDetected && currentTime - milky_paletteLastPaletteInitTime > 10000) || milky_paletteLastPaletteInitTime == 0) {
         generatePalette();             // Reinitialize the palette
         startPaletteTransition();     // Start transitioning to the new palette
         milky_paletteLastPaletteInitTime = currentTime; // Update the last initialization time

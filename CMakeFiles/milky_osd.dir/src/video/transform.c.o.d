@@ -70,4 +70,5 @@ CMakeFiles/milky_osd.dir/src/video/transform.c.o: \
  /usr/include/strings.h \
  /usr/include/x86_64-linux-gnu/bits/strings_fortified.h \
  /usr/include/x86_64-linux-gnu/bits/string_fortified.h \
- /usr/lib/gcc/x86_64-linux-gnu/11/include/omp.h
+ /usr/lib/gcc/x86_64-linux-gnu/11/include/omp.h \
+ /home/streamer/Code/Milky_Linux_OSD/src/video/../audio/energy.h

@@ -4,6 +4,9 @@
 static float milky_transformLastTheta = 0.0f;
 static float milky_transformTargetTheta = 0.0f;
 
+static clock_t milky_transformLastRotationInitTime = 0;
+
+
 /**
  * Rotates the given frame buffer by a calculated angle and blends the result back into the frame.
  * Therefore, applies a smooth rotation transformation to the frame buffer using a temporary buffer.
@@ -27,7 +30,7 @@ void rotate(float timeFrame, uint8_t *tempBuffer, uint8_t *frame, float speed, f
     // this ensures that the rotation direction changes smoothly and randomly
     if (fabs(milky_transformLastTheta - milky_transformTargetTheta) < 0.01f) {
         // set a new targetTheta randomly between -45 and 45 degrees
-        milky_transformTargetTheta = (rand() % 90 - 45) * (M_PI / 180.0f);
+        milky_transformTargetTheta = (rand() % 51 - 25) * (M_PI / 180.0f);
     }
 
     // interpolate theta towards targetTheta for smooth transition
@@ -59,18 +62,54 @@ void rotate(float timeFrame, uint8_t *tempBuffer, uint8_t *frame, float speed, f
                 size_t dst_index = (y * width + x) * 4;
                 
                 // copy the pixel from the source to the destination in the temp buffer
-
+#ifdef __ARM_NEON__
+                // Optimized 4-byte pixel copy using NEON intrinsics
+                uint32x2_t pixel = vld1_dup_u32((uint32_t *)&frame[src_index]);
+                vst1_lane_u32((uint32_t *)&tempBuffer[dst_index], pixel, 0);
+#else
                 // Fallback for non-NEON platforms
                 memcpy(&tempBuffer[dst_index], &frame[src_index], 4);
+#endif
             }
         }
     }
 
+    // blend the rotated image back into the frame with a specified alpha
+#ifdef __ARM_NEON__
+    // NEON-optimized blending
+    float alpha = 0.7f;
+    uint8x16_t alpha_vec = vdupq_n_u8((uint8_t)(alpha * 255));
+    uint8x16_t inv_alpha_vec = vdupq_n_u8((uint8_t)((1 - alpha) * 255));
+
+    for (size_t i = 0; i < width * height * 4; i += 16) {
+        // Load original and temp pixels
+        uint8x16_t orig_pixels = vld1q_u8(&frame[i]);
+        uint8x16_t temp_pixels = vld1q_u8(&tempBuffer[i]);
+
+        // Convert to uint16 for precision
+        uint16x8_t orig_low = vmovl_u8(vget_low_u8(orig_pixels));
+        uint16x8_t orig_high = vmovl_u8(vget_high_u8(orig_pixels));
+        uint16x8_t temp_low = vmovl_u8(vget_low_u8(temp_pixels));
+        uint16x8_t temp_high = vmovl_u8(vget_high_u8(temp_pixels));
+
+        // Multiply by alpha and (1 - alpha) (scaled as integer factors)
+        orig_low = vmlaq_u16(vmulq_u16(orig_low, vdupq_n_u16(255 - (uint8_t)(alpha * 255))), temp_low, vdupq_n_u16((uint8_t)(alpha * 255)));
+        orig_high = vmlaq_u16(vmulq_u16(orig_high, vdupq_n_u16(255 - (uint8_t)(alpha * 255))), temp_high, vdupq_n_u16((uint8_t)(alpha * 255)));
+
+        // Scale down by 255 to get final blended result
+        uint8x16_t blended_pixels = vcombine_u8(vqshrn_n_u16(orig_low, 8), vqshrn_n_u16(orig_high, 8));
+
+        // Store the blended result
+        vst1q_u8(&frame[i], blended_pixels);
+    }
+#else
+    // Fallback for non-NEON platforms
     float alpha = 0.7f;
     #pragma omp parallel for
     for (size_t i = 0; i < width * height * 4; i++) {
         frame[i] = (uint8_t)(frame[i] * (1 - alpha) + tempBuffer[i] * alpha);
     }
+#endif
 }
 
 /**

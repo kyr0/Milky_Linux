@@ -481,9 +481,9 @@ CMakeFiles/milky_osd.dir/src/main.c.o: src/main.c \
   src/audio/energy.h \
   src/video/bitdepth.h \
   src/video/transform.h \
+  src/audio/energy.h \
   src/video/draw.h \
   src/video/palette.h \
-  src/audio/energy.h \
   src/video/effects/chaser.h \
   src/video/draw.h \
   src/video/effects/tunnel.h \
@@ -948,9 +948,9 @@ CMakeFiles/milky_osd.dir/src/video.c.o: src/video.c \
   src/audio/energy.h \
   src/video/bitdepth.h \
   src/video/transform.h \
+  src/audio/energy.h \
   src/video/draw.h \
   src/video/palette.h \
-  src/audio/energy.h \
   src/video/effects/chaser.h \
   src/video/draw.h \
   src/video/effects/tunnel.h \
@@ -1506,7 +1506,8 @@ CMakeFiles/milky_osd.dir/src/video/transform.c.o: src/video/transform.c \
   /usr/include/strings.h \
   /usr/include/x86_64-linux-gnu/bits/strings_fortified.h \
   /usr/include/x86_64-linux-gnu/bits/string_fortified.h \
-  /usr/lib/gcc/x86_64-linux-gnu/11/include/omp.h
+  /usr/lib/gcc/x86_64-linux-gnu/11/include/omp.h \
+  src/audio/energy.h
 
 
 src/video/palette.c:

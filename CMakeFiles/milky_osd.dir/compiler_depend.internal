@@ -486,9 +486,9 @@ CMakeFiles/milky_osd.dir/src/main.c.o
  /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/bitdepth.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/transform.h
+ /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/draw.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/palette.h
- /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/effects/chaser.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/draw.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/effects/tunnel.h
@@ -956,9 +956,9 @@ CMakeFiles/milky_osd.dir/src/video.c.o
  /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/bitdepth.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/transform.h
+ /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/draw.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/palette.h
- /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/effects/chaser.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/draw.h
  /home/streamer/Code/Milky_Linux_OSD/src/video/effects/tunnel.h
@@ -1522,4 +1522,5 @@ CMakeFiles/milky_osd.dir/src/video/transform.c.o
  /usr/include/x86_64-linux-gnu/bits/strings_fortified.h
  /usr/include/x86_64-linux-gnu/bits/string_fortified.h
  /usr/lib/gcc/x86_64-linux-gnu/11/include/omp.h
+ /home/streamer/Code/Milky_Linux_OSD/src/audio/energy.h
 

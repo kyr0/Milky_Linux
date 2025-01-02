@@ -97,9 +97,9 @@ CMakeFiles/milky_osd.dir/src/main.c.o: \
  /home/streamer/Code/Milky_Linux_OSD/src/./audio/energy.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/bitdepth.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/transform.h \
+ /home/streamer/Code/Milky_Linux_OSD/src/./video/../audio/energy.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/draw.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/palette.h \
- /home/streamer/Code/Milky_Linux_OSD/src/./video/../audio/energy.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/effects/chaser.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/effects/../draw.h \
  /home/streamer/Code/Milky_Linux_OSD/src/./video/effects/tunnel.h \
